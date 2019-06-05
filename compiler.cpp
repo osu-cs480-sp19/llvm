@@ -20,6 +20,16 @@ llvm::Value* numericConstant(float val) {
 }
 
 
+llvm::Value* variableValue(const std::string& name) {
+  llvm::Value* val = TheSymbolTable[name];
+  if (!val) {
+    std::cerr << "Invalid variable name: " << name << std::endl;
+    return NULL;
+  }
+  return TheBuilder.CreateLoad(val, name.c_str());
+}
+
+
 llvm::Value* binaryOperation(llvm::Value* lhs, llvm::Value* rhs, char op) {
   if (!lhs || !rhs) {
     return NULL;
@@ -34,6 +44,9 @@ llvm::Value* binaryOperation(llvm::Value* lhs, llvm::Value* rhs, char op) {
     return TheBuilder.CreateFMul(lhs, rhs, "multmp");
   case '/':
     return TheBuilder.CreateFDiv(lhs, rhs, "divtmp");
+  case '<':
+    lhs = TheBuilder.CreateFCmpULT(lhs, rhs, "lttmp");
+    return TheBuilder.CreateUIToFP(lhs, llvm::Type::getFloatTy(TheContext), "booltmp");
   default:
     std::cerr << "Invalid operator:" << op << std::endl;
     return NULL;
@@ -60,6 +73,53 @@ llvm::Value* assignmentStatement(std::string& lhs, llvm::Value* rhs) {
     TheSymbolTable[lhs] = generateEntryBlockAlloca(lhs);
   }
   return TheBuilder.CreateStore(rhs, TheSymbolTable[lhs]);
+}
+
+
+llvm::Value* ifElseStatement() {
+  llvm::Value* cond = binaryOperation(variableValue("b"), numericConstant(8), '<');
+  if (!cond) {
+    return NULL;
+  }
+  cond = TheBuilder.CreateFCmpONE(cond, numericConstant(0), "ifcond");
+
+  llvm::Function* currFn =
+    TheBuilder.GetInsertBlock()->getParent();
+  llvm::BasicBlock* ifBlock =
+    llvm::BasicBlock::Create(TheContext, "ifBlock", currFn);
+  llvm::BasicBlock* elseBlock =
+    llvm::BasicBlock::Create(TheContext, "elseBlock");
+  llvm::BasicBlock* contBlock =
+    llvm::BasicBlock::Create(TheContext, "contBlock");
+
+  TheBuilder.CreateCondBr(cond, ifBlock, elseBlock);
+  TheBuilder.SetInsertPoint(ifBlock);
+
+  /* If block */
+  llvm::Value* aTimesB = binaryOperation(
+    variableValue("a"),
+    variableValue("b"),
+    '*'
+  );
+  std::string var("c");
+  llvm::Value* ifBlockStatement = assignmentStatement(var, aTimesB);
+  TheBuilder.CreateBr(contBlock);
+
+  /* Else block */
+  currFn->getBasicBlockList().push_back(elseBlock);
+  TheBuilder.SetInsertPoint(elseBlock);
+  llvm::Value* aPlusB = binaryOperation(
+    variableValue("a"),
+    variableValue("b"),
+    '+'
+  );
+  llvm::Value* elseBlockStatement = assignmentStatement(var, aPlusB);
+  TheBuilder.CreateBr(contBlock);
+
+  currFn->getBasicBlockList().push_back(contBlock);
+  TheBuilder.SetInsertPoint(contBlock);
+
+  return contBlock;
 }
 
 
@@ -94,6 +154,16 @@ int main(int argc, char const *argv[]) {
 
   std::string var1("a");
   llvm::Value* assn = assignmentStatement(var1, expr2);
+
+  llvm::Value* expr3 = binaryOperation(
+    variableValue(var1),
+    numericConstant(4),
+    '/'
+  );
+  std::string var2("b");
+  llvm::Value* assn2 = assignmentStatement(var2, expr3);
+
+  llvm::Value* ifElse = ifElseStatement();
 
   TheBuilder.CreateRetVoid();
 

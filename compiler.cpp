@@ -7,6 +7,18 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/IR/Value.h"
 
+#include "llvm/IR/LegacyPassManager.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/TargetRegistry.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/Target/TargetMachine.h"
+
+#include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/Scalar/GVN.h"
+#include "llvm/Transforms/Utils.h"
+
 // using namespace llvm;
 
 static llvm::LLVMContext TheContext;
@@ -123,11 +135,68 @@ llvm::Value* ifElseStatement() {
 }
 
 
+void generateObjCode(const std::string& filename) {
+  std::string targetTriple = llvm::sys::getDefaultTargetTriple();
+
+  llvm::InitializeAllTargetInfos();
+  llvm::InitializeAllTargets();
+  llvm::InitializeAllTargetMCs();
+  llvm::InitializeAllAsmParsers();
+  llvm::InitializeAllAsmPrinters();
+
+  std::string error;
+  const llvm::Target* target =
+    llvm::TargetRegistry::lookupTarget(targetTriple, error);
+  if (!target) {
+    std::cerr << error << std::endl;
+  } else {
+    std::string cpu = "generic";
+    std::string features = "";
+    llvm::TargetOptions options;
+    llvm::TargetMachine* targetMachine =
+      target->createTargetMachine(targetTriple, cpu, features,
+        options, llvm::Optional<llvm::Reloc::Model>());
+
+    TheModule->setDataLayout(targetMachine->createDataLayout());
+    TheModule->setTargetTriple(targetTriple);
+
+    std::error_code ec;
+    llvm::raw_fd_ostream file(filename, ec, llvm::sys::fs::F_None);
+    if (ec) {
+      std::cerr << "Could not open output file: " << ec.message() << std::endl;
+    } else {
+      llvm::TargetMachine::CodeGenFileType type = llvm::TargetMachine::CGFT_ObjectFile;
+      llvm::legacy::PassManager pm;
+      if (targetMachine->addPassesToEmitFile(pm, file, NULL, type)) {
+        std::cerr << "Unable to emit target code" << std::endl;
+      } else {
+        pm.run(*TheModule);
+        file.close();
+      }
+    }
+  }
+}
+
+
+void doOptimizations(llvm::Function* fn) {
+  llvm::legacy::FunctionPassManager* fpm =
+    new llvm::legacy::FunctionPassManager(TheModule);
+
+  fpm->add(llvm::createPromoteMemoryToRegisterPass());
+  // fpm->add(llvm::createInstructionCombiningPass());
+  fpm->add(llvm::createReassociatePass());
+  fpm->add(llvm::createGVNPass());
+  fpm->add(llvm::createCFGSimplificationPass());
+
+  fpm->run(*fn);
+}
+
+
 int main(int argc, char const *argv[]) {
   TheModule = new llvm::Module("LLVM_Demo", TheContext);
 
   llvm::FunctionType* fooFnType = llvm::FunctionType::get(
-    llvm::Type::getVoidTy(TheContext), false
+    llvm::Type::getFloatTy(TheContext), false
   );
 
   llvm::Function* fooFn = llvm::Function::Create(
@@ -165,10 +234,16 @@ int main(int argc, char const *argv[]) {
 
   llvm::Value* ifElse = ifElseStatement();
 
-  TheBuilder.CreateRetVoid();
+  // TheBuilder.CreateRetVoid();
+  TheBuilder.CreateRet(variableValue("c"));
+
+  doOptimizations(fooFn);
 
   llvm::verifyFunction(*fooFn);
   TheModule->print(llvm::outs(), NULL);
+
+  std::string filename = "foo.o";
+  generateObjCode(filename);
 
   delete TheModule;
   return 0;
